@@ -1,0 +1,71 @@
+grid:
+  x_size: 3
+  y_size: 3
+
+arc:
+  [0-0]
+
+pcie:
+  [0-1]
+
+dram:
+  [
+    [0-2, 1-0, 1-1],
+  ]
+
+# Dram view parameters are used by tt-metal and are not recognized by UMD.
+# Eth and worker dram endpoints represent subchannel id from dram array for each noc.
+# For example, a dram view where channel is 0 and worker_endpoint is [1, 2] would resolve to dram core at position [0,2] for noc1 which is 0-11.
+# Endpoint assignments are arbitrary.
+dram_views:
+  [
+    {
+      channel: 0,
+      eth_endpoint: [0, 0],
+      worker_endpoint: [0, 0],
+      address_offset: 0
+    }
+  ]
+
+dram_view_size:
+  1073741824
+
+eth:
+  [
+      1-2,
+  ]
+
+functional_workers:
+  [
+   2-0, 2-1, 2-2
+  ]
+
+harvested_workers:
+  []
+
+router_only:
+  []
+
+worker_l1_size:
+  1499136
+
+dram_bank_size:
+  2147483648
+
+eth_l1_size:
+  262144
+
+arch_name: WORMHOLE_B0
+
+features:
+  noc:
+    translation_id_enabled: True
+  unpacker:
+    version: 2
+    inline_srca_trans_without_srca_trans_instr: True
+  math:
+    dst_size_alignment: 32768
+  packer:
+    version: 2
+  overlay:
+    version: 2

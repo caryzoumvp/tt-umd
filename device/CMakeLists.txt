@@ -36,6 +36,12 @@ else()
     message(STATUS "Building device library as SHARED")
 endif()
 add_library(${PROJECT_NAME}::device ALIAS device)
+add_library(ttsim SHARED)
+target_sources(
+    ttsim
+    PRIVATE
+        simulation/tt_sim.cpp
+)
 
 # Enable unity builds for faster compilation 
 # Note: Requires TT_ENABLE_UNITY_BUILD function from parent project 
@@ -282,6 +288,7 @@ if(TT_UMD_BUILD_SIMULATION)
             uv_a
     )
 endif()
+
 
 # Install functionality requires CMake 3.23+ for FILE_SET support
 # Skip install for static libraries as they are typically used for internal linking only
