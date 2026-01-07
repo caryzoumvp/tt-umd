@@ -45,6 +45,12 @@ add_custom_target(generate_lite_fabric_embed ALL DEPENDS ${LITE_FABRIC_EMBED})
 
 add_library(device SHARED)
 add_library(${PROJECT_NAME}::device ALIAS device)
+add_library(ttsim SHARED)
+target_sources(
+    ttsim
+    PRIVATE
+        simulation/tt_sim.cpp
+)
 
 add_dependencies(device generate_lite_fabric_embed)
 
@@ -265,6 +271,7 @@ if(TT_UMD_BUILD_SIMULATION)
             uv_a
     )
 endif()
+
 
 # Install functionality requires CMake 3.23+ for FILE_SET support
 if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.23)

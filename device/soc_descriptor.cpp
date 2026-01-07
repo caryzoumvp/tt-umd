@@ -360,10 +360,13 @@ SocDescriptor::SocDescriptor(const tt::ARCH arch_soc, ChipInfo chip_info) :
 }
 
 void SocDescriptor::load_from_soc_desc_info(const SocDescriptorInfo &soc_desc_info) {
+    log_info(LogUMD, "**********");
     arch = soc_desc_info.arch;
     grid_size = soc_desc_info.grid_size;
     load_core_descriptors_from_soc_desc_info(soc_desc_info);
+    log_info(LogUMD, "111111");
     load_soc_features_from_soc_desc_info(soc_desc_info);
+    log_info(LogUMD, "22222");
 }
 
 std::vector<tt_xy_pair> SocDescriptor::convert_to_tt_xy_pair(const std::vector<std::string> &core_strings) {

@@ -241,6 +241,9 @@ std::unique_ptr<Chip> Cluster::construct_chip_from_cluster(
     if (chip_type == ChipType::SIMULATION) {
 #ifdef TT_UMD_BUILD_SIMULATION
         log_info(LogUMD, "Creating Simulation device");
+        log_info(LogUMD, "simulator directorie {}", simulator_directory.c_str());
+        //log_info(LogUMD, "soc desc {}", soc_desc);
+        log_info(LogUMD, "chip id {}", chip_id);
         return SimulationChip::create(simulator_directory, soc_desc, chip_id);
 #else
         throw std::runtime_error(
