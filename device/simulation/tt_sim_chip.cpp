@@ -70,17 +70,23 @@ void TTSimChip::write_to_device(CoreCoord core, const void* src, uint64_t l1_des
     std::lock_guard<std::mutex> lock(device_lock);
     log_debug(tt::LogEmulationDriver, "Device writing 0x{:x} bytes to l1_dest 0x{:x} in core {}", size, l1_dest, core.str());
     tt_xy_pair translate_core = soc_descriptor_.translate_coord_to(core, CoordSystem::TRANSLATED);
-    if (core.core_type == tt::CoreType::TENSIX && translate_core.x == 18 && translate_core.y == 18) {
-        log_info(tt::LogEmulationDriver, "size {}, l1_dest 0x{:x} x {} y {} ", size, l1_dest, translate_core.x, translate_core.y);
-    }
     pfn_libttsim_tile_wr_bytes(translate_core.x, translate_core.y, l1_dest, src, size);
 }
 
 void TTSimChip::read_from_device(CoreCoord core, void* dest, uint64_t l1_src, uint32_t size) {
     std::lock_guard<std::mutex> lock(device_lock);
     tt_xy_pair translate_core = soc_descriptor_.translate_coord_to(core, CoordSystem::TRANSLATED);
-    log_debug(tt::LogEmulationDriver, "Device reading 0x{:x} bytes to l1_src 0x{:x} in core {}", size, l1_src, core.str());
-    pfn_libttsim_tile_rd_bytes(translate_core.x, translate_core.y, l1_src, dest, size);
+    if ((translate_core.x == 18 && translate_core.y == 18) || (translate_core.x == 18 && translate_core.y == 19)) {
+        log_info(
+            tt::LogEmulationDriver,
+            "read size {}, l1_dest 0x{:x} x {} y {} ",
+            size,
+            l1_src,
+            translate_core.x,
+            translate_core.y);
+        pfn_libttsim_tile_rd_bytes(translate_core.x, translate_core.y, l1_src, dest, size);
+    }
+   
     pfn_libttsim_clock(10);
 }
 
@@ -112,10 +118,12 @@ void TTSimChip::send_tensix_risc_reset(const TensixSoftResetOptions& soft_resets
 
 void TTSimChip::assert_risc_reset(CoreCoord core, const RiscType selected_riscs) {
     std::lock_guard<std::mutex> lock(device_lock);
-    log_debug(tt::LogEmulationDriver, "Sending 'assert_risc_reset' signal for risc_type {}", selected_riscs);
+    
     tt_xy_pair translate_core = soc_descriptor_.translate_coord_to(core, CoordSystem::TRANSLATED);
     uint32_t soft_reset_addr = architecture_impl_->get_tensix_soft_reset_addr();
     uint32_t soft_reset_update = architecture_impl_->get_soft_reset_reg_value(selected_riscs);
+    log_debug(tt::LogEmulationDriver, "Sending 'assert_risc_reset' signal for risc_type {}" 
+        "addr 0x{:x}, update value 0x{:x}", selected_riscs, soft_reset_addr, soft_reset_update);
     if (libttsim_pci_device_id == 0xFEED) {  // QSR
         uint64_t reset_value;
         pfn_libttsim_tile_rd_bytes(
@@ -136,10 +144,16 @@ void TTSimChip::assert_risc_reset(CoreCoord core, const RiscType selected_riscs)
 
 void TTSimChip::deassert_risc_reset(CoreCoord core, const RiscType selected_riscs, bool staggered_start) {
     std::lock_guard<std::mutex> lock(device_lock);
-    log_debug(tt::LogEmulationDriver, "Sending 'deassert_risc_reset' signal for risc_type {}", selected_riscs);
     tt_xy_pair translate_core = soc_descriptor_.translate_coord_to(core, CoordSystem::TRANSLATED);
     uint32_t soft_reset_addr = architecture_impl_->get_tensix_soft_reset_addr();
     uint32_t soft_reset_update = architecture_impl_->get_soft_reset_reg_value(selected_riscs);
+    log_debug(
+        tt::LogEmulationDriver,
+        "Sending 'deassert_risc_reset' signal for risc_type {}"
+        "addr 0x{:x}, update value 0x{:x}",
+        selected_riscs,
+        soft_reset_addr,
+        soft_reset_update);
     if (libttsim_pci_device_id == 0xFEED) {  // QSR
         uint64_t reset_value;
         pfn_libttsim_tile_rd_bytes(
