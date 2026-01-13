@@ -1,127 +1,252 @@
 #include <stdint.h>
 
-#include <algorithm>
+#include <cerrno>
 #include <cstdint>
+#include <cstdarg>
 #include <cstdlib>
 #include <cstring>
+#include <cstdio>
 #include <mutex>
 #include <string>
 #include <unordered_map>
-#include <vector>
 
-#include <fcntl.h>
-#include <semaphore.h>
-#include <sys/mman.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <unistd.h>
 
 namespace {
 
-constexpr uint64_t kL1SizeBytes = 1464 * 1024;
-struct TileMemory {
-    std::vector<uint8_t> l1;
-    std::unordered_map<uint64_t, uint8_t> mmio;
-    uint64_t max_l1_touched = 0;
-    bool touched = false;
-};
+constexpr uint8_t CMD_WRITE_L1 = 0x01;
+constexpr uint8_t CMD_WRITE_REG = 0x02;
+constexpr uint8_t CMD_READ_L1 = 0x03;
+constexpr uint8_t CMD_WRITE_LOCALRAM = 0x07;
+constexpr uint8_t CMD_READ_LOCALRAM = 0x08;
 
-struct TileShared {
-    int fd = -1;
-    uint8_t* map = nullptr;
-    size_t size = 0;
-    sem_t* sem = SEM_FAILED;
-    bool ready = false;
-};
+constexpr uint8_t RESP_OK = 0x00;
 
-std::mutex g_mem_mutex;
-std::unordered_map<uint64_t, TileMemory> g_tiles;
-std::unordered_map<uint64_t, TileShared> g_shared;
+constexpr uint32_t kDebugSoftResetAddr = 0xFFB121B0;
+
+constexpr const char* kSocketEnvVar = "TT_WORMHOLE_DBG_SOCKET";
+constexpr const char* kDefaultSocketPath = "/tmp/tt_sim.sock";
+
+std::mutex g_client_mutex;
+int g_client_fd = -1;
+std::unordered_map<uint64_t, uint32_t> g_soft_reset_shadow;
+bool g_debug_enabled = true;
 
 uint64_t tile_key(uint32_t x, uint32_t y) {
     return (static_cast<uint64_t>(x) << 32) | y;
 }
 
-TileMemory& get_tile(uint32_t x, uint32_t y) {
-    uint64_t key = tile_key(x, y);
-    auto& tile = g_tiles[key];
-    if (tile.l1.empty()) {
-        tile.l1.assign(kL1SizeBytes, 0);
-    }
-    tile.touched = true;
-    return tile;
+std::string dbg_socket_path() {
+    const char* env = std::getenv(kSocketEnvVar);
+    return env ? env : kDefaultSocketPath;
 }
 
-std::string shm_name(uint32_t x, uint32_t y) {
-    const char* prefix = std::getenv("TT_SIM_SHM_PREFIX");
-    std::string base = prefix ? prefix : "/ttsim_l1";
-    return base + "_x" + std::to_string(x) + "_y" + std::to_string(y);
+void init_debug() {
+    if (g_debug_enabled) {
+        return;
+    }
+    const char* env = std::getenv("TT_SIM_DEBUG");
+    g_debug_enabled = env && env[0] != '\0';
 }
 
-std::string sem_name(uint32_t x, uint32_t y) {
-    const char* prefix = std::getenv("TT_SIM_SEM_PREFIX");
-    std::string base = prefix ? prefix : "/ttsim_l1_sem";
-    return base + "_x" + std::to_string(x) + "_y" + std::to_string(y);
+void dbg_log(const char* fmt, ...) {
+    if (!g_debug_enabled) {
+        return;
+    }
+    va_list args;
+    va_start(args, fmt);
+    std::fputs("[tt_sim] ", stderr);
+    std::vfprintf(stderr, fmt, args);
+    std::fputc('\n', stderr);
+    va_end(args);
 }
 
-TileShared& get_shared(uint32_t x, uint32_t y) {
-    uint64_t key = tile_key(x, y);
-    auto& shared = g_shared[key];
-    if (shared.map) {
-        return shared;
+void close_client_locked() {
+    if (g_client_fd >= 0) {
+        dbg_log("close client fd=%d", g_client_fd);
+        close(g_client_fd);
+        g_client_fd = -1;
+    }
+}
+
+bool connect_client_locked() {
+    if (g_client_fd >= 0) {
+        return true;
     }
 
-    const size_t total = kL1SizeBytes;
-    std::string shm = shm_name(x, y);
-    std::string sem = sem_name(x, y);
+    std::string path = dbg_socket_path();
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) {
+        dbg_log("socket() failed: %s", std::strerror(errno));
+        return false;
+    }
 
-    shared.fd = shm_open(shm.c_str(), O_CREAT | O_RDWR, 0666);
-    if (shared.fd < 0) {
-        return shared;
+    sockaddr_un addr;
+    std::memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    if (path.size() >= sizeof(addr.sun_path)) {
+        dbg_log("socket path too long: %s", path.c_str());
+        close(fd);
+        return false;
     }
-    if (ftruncate(shared.fd, static_cast<off_t>(total)) != 0) {
-        close(shared.fd);
-        shared.fd = -1;
-        return shared;
+    std::strncpy(addr.sun_path, path.c_str(), sizeof(addr.sun_path) - 1);
+
+    if (connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+        dbg_log("connect(%s) failed: %s", path.c_str(), std::strerror(errno));
+        close(fd);
+        return false;
     }
-    shared.map = static_cast<uint8_t*>(
-        mmap(nullptr, total, PROT_READ | PROT_WRITE, MAP_SHARED, shared.fd, 0));
-    if (shared.map == MAP_FAILED) {
-        shared.map = nullptr;
-        close(shared.fd);
-        shared.fd = -1;
-        return shared;
+
+    g_client_fd = fd;
+    dbg_log("connected to %s fd=%d", path.c_str(), g_client_fd);
+    return true;
+}
+
+bool write_exact(int fd, const void* buf, size_t len) {
+    const uint8_t* ptr = static_cast<const uint8_t*>(buf);
+    size_t remaining = len;
+    while (remaining > 0) {
+        ssize_t ret = ::write(fd, ptr, remaining);
+        if (ret < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            dbg_log("write_exact failed: %s", std::strerror(errno));
+            return false;
+        }
+        if (ret == 0) {
+            dbg_log("write_exact failed: wrote 0 bytes");
+            return false;
+        }
+        ptr += ret;
+        remaining -= static_cast<size_t>(ret);
     }
-    shared.size = total;
-    shared.sem = sem_open(sem.c_str(), O_CREAT, 0666, 0);
-    return shared;
+    return true;
+}
+
+bool read_exact(int fd, void* buf, size_t len) {
+    uint8_t* ptr = static_cast<uint8_t*>(buf);
+    size_t remaining = len;
+    while (remaining > 0) {
+        ssize_t ret = ::read(fd, ptr, remaining);
+        if (ret < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            dbg_log("read_exact failed: %s", std::strerror(errno));
+            return false;
+        }
+        if (ret == 0) {
+            dbg_log("read_exact failed: read 0 bytes");
+            return false;
+        }
+        ptr += ret;
+        remaining -= static_cast<size_t>(ret);
+    }
+    return true;
+}
+
+void encode_u32_le(uint8_t* dst, uint32_t value) {
+    dst[0] = static_cast<uint8_t>(value & 0xFFu);
+    dst[1] = static_cast<uint8_t>((value >> 8) & 0xFFu);
+    dst[2] = static_cast<uint8_t>((value >> 16) & 0xFFu);
+    dst[3] = static_cast<uint8_t>((value >> 24) & 0xFFu);
+}
+
+bool send_cmd_locked(
+    uint8_t cmd,
+    uint8_t tile_x,
+    uint8_t tile_y,
+    uint32_t addr,
+    uint32_t size,
+    const uint8_t* payload,
+    size_t payload_len,
+    uint8_t* out_status) {
+    if (!connect_client_locked()) {
+        dbg_log("send_cmd: connect failed cmd=0x%02x tile=(%u,%u)", cmd, tile_x, tile_y);
+        return false;
+    }
+
+    uint8_t header[11];
+    header[0] = cmd;
+    header[1] = tile_x;
+    header[2] = tile_y;
+    encode_u32_le(header + 3, addr);
+    encode_u32_le(header + 7, size);
+
+    if (!write_exact(g_client_fd, header, sizeof(header))) {
+        close_client_locked();
+        return false;
+    }
+
+    if (payload_len > 0 && !write_exact(g_client_fd, payload, payload_len)) {
+        close_client_locked();
+        return false;
+    }
+
+    uint8_t status = 0;
+    if (!read_exact(g_client_fd, &status, 1)) {
+        close_client_locked();
+        return false;
+    }
+
+    if (out_status) {
+        *out_status = status;
+    }
+    dbg_log("send_cmd: cmd=0x%02x tile=(%u,%u) addr=0x%08x size=%u status=0x%02x",
+            cmd, tile_x, tile_y, addr, size, status);
+    return true;
+}
+
+bool send_cmd_read_locked(
+    uint8_t cmd,
+    uint8_t tile_x,
+    uint8_t tile_y,
+    uint32_t addr,
+    uint32_t size,
+    uint8_t* out_data) {
+    uint8_t status = 0;
+    if (!send_cmd_locked(cmd, tile_x, tile_y, addr, size, nullptr, 0, &status)) {
+        return false;
+    }
+
+    if (status != RESP_OK) {
+        return false;
+    }
+
+    if (size > 0 && !read_exact(g_client_fd, out_data, size)) {
+        close_client_locked();
+        return false;
+    }
+
+    return true;
+}
+
+bool is_localram_addr(uint32_t addr) {
+    uint32_t bank = (addr >> 28) & 0xFu;
+    return bank >= 1 && bank <= 4;
+}
+
+bool is_soft_reset_addr(uint64_t addr) {
+    return addr == static_cast<uint64_t>(kDebugSoftResetAddr);
 }
 
 }  // namespace
 
 extern "C" {
 void libttsim_init() {
-    std::lock_guard<std::mutex> lock(g_mem_mutex);
-    g_tiles.clear();
-    g_shared.clear();
+    std::lock_guard<std::mutex> lock(g_client_mutex);
+    init_debug();
+    g_soft_reset_shadow.clear();
+    connect_client_locked();
 }
 
 void libttsim_exit() {
-    std::lock_guard<std::mutex> lock(g_mem_mutex);
-    for (auto& entry : g_shared) {
-        TileShared& shared = entry.second;
-        if (shared.sem != SEM_FAILED) {
-            sem_close(shared.sem);
-            shared.sem = SEM_FAILED;
-        }
-        if (shared.map && shared.map != MAP_FAILED) {
-            munmap(shared.map, shared.size);
-            shared.map = nullptr;
-        }
-        if (shared.fd >= 0) {
-            close(shared.fd);
-            shared.fd = -1;
-        }
-    }
-    g_shared.clear();
+    std::lock_guard<std::mutex> lock(g_client_mutex);
+    close_client_locked();
+    g_soft_reset_shadow.clear();
 }
 
 uint32_t libttsim_pci_config_rd32(uint32_t bus_device_function, uint32_t offset) {
@@ -131,52 +256,91 @@ uint32_t libttsim_pci_config_rd32(uint32_t bus_device_function, uint32_t offset)
 }
 
 void libttsim_tile_rd_bytes(uint32_t x, uint32_t y, uint64_t addr, void* p, uint32_t size) {
-    // if (!p || size == 0) {
-    //     return;
-    // }
-    // std::lock_guard<std::mutex> lock(g_mem_mutex);
-    // TileMemory& tile = get_tile(x, y);
-    // uint8_t* out = static_cast<uint8_t*>(p);
-    // for (uint32_t i = 0; i < size; ++i) {
-    //     uint64_t cur = addr + i;
-    //     if (cur < tile.l1.size()) {
-    //         TileShared& shared = get_shared(x, y);
-    //         if (!shared.ready && shared.sem != SEM_FAILED) {
-    //             sem_wait(shared.sem);
-    //             shared.ready = true;
-    //         }
-    //         if (shared.map && cur < shared.size) {
-    //             out[i] = shared.map[cur];
-    //             tile.l1[cur] = out[i];
-    //         } else {
-    //             out[i] = tile.l1[cur];
-    //         }
-    //     } else {
-    //         auto it = tile.mmio.find(cur);
-    //         out[i] = (it == tile.mmio.end()) ? 0 : it->second;
-    //     }
-    // }
+    if (!p || size == 0) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(g_client_mutex);
+    dbg_log("rd: tile=(%u,%u) addr=0x%llx size=%u", x, y,
+            static_cast<unsigned long long>(addr), size);
+
+    if (is_soft_reset_addr(addr) && size == sizeof(uint32_t)) {
+        uint32_t value = 0;
+        auto it = g_soft_reset_shadow.find(tile_key(x, y));
+        if (it != g_soft_reset_shadow.end()) {
+            value = it->second;
+        }
+        encode_u32_le(static_cast<uint8_t*>(p), value);
+        return;
+    }
+
+    if (addr > 0xFFFFFFFFull) {
+        std::memset(p, 0, size);
+        return;
+    }
+
+    uint32_t addr32 = static_cast<uint32_t>(addr);
+    uint8_t* out = static_cast<uint8_t*>(p);
+    uint8_t tile_x = static_cast<uint8_t>(x);
+    uint8_t tile_y = static_cast<uint8_t>(y);
+    bool ok = false;
+    if (is_localram_addr(addr32)) {
+        ok = send_cmd_read_locked(CMD_READ_LOCALRAM, tile_x, tile_y, addr32, size, out);
+    } else {
+        ok = send_cmd_read_locked(CMD_READ_L1, tile_x, tile_y, addr32, size, out);
+    }
+
+    if (!ok) {
+        std::memset(p, 0, size);
+        dbg_log("rd: failed, zero-filled");
+    }
 }
 
 void libttsim_tile_wr_bytes(uint32_t x, uint32_t y, uint64_t addr, const void* p, uint32_t size) {
     if (!p || size == 0) {
         return;
     }
-    std::lock_guard<std::mutex> lock(g_mem_mutex);
-    TileMemory& tile = get_tile(x, y);
-    const uint8_t* in = static_cast<const uint8_t*>(p);
-    for (uint32_t i = 0; i < size; ++i) {
-        uint64_t cur = addr + i;
-        if (cur < tile.l1.size()) {
-            tile.l1[cur] = in[i];
-            tile.max_l1_touched = std::max(tile.max_l1_touched, cur);
-            TileShared& shared = get_shared(x, y);
-            if (shared.map && cur < shared.size) {
-                shared.map[cur] = in[i];
-            }
-        } else {
-            tile.mmio[cur] = in[i];
+
+    std::lock_guard<std::mutex> lock(g_client_mutex);
+    dbg_log("wr: tile=(%u,%u) addr=0x%llx size=%u", x, y,
+            static_cast<unsigned long long>(addr), size);
+
+    if (is_soft_reset_addr(addr) && size == sizeof(uint32_t)) {
+        uint32_t value = 0;
+        std::memcpy(&value, p, sizeof(value));
+        uint8_t payload[sizeof(value)];
+        encode_u32_le(payload, value);
+
+        uint8_t status = 0;
+        bool ok = send_cmd_locked(
+            CMD_WRITE_REG,
+            static_cast<uint8_t>(x),
+            static_cast<uint8_t>(y),
+            static_cast<uint32_t>(addr),
+            sizeof(value),
+            payload,
+            sizeof(payload),
+            &status);
+        if (ok && status == RESP_OK) {
+            g_soft_reset_shadow[tile_key(x, y)] = value;
+            dbg_log("wr: soft reset updated value=0x%08x", value);
         }
+        return;
+    }
+
+    if (addr > 0xFFFFFFFFull) {
+        return;
+    }
+
+    uint32_t addr32 = static_cast<uint32_t>(addr);
+    const uint8_t* in = static_cast<const uint8_t*>(p);
+    uint8_t tile_x = static_cast<uint8_t>(x);
+    uint8_t tile_y = static_cast<uint8_t>(y);
+
+    if (is_localram_addr(addr32)) {
+        send_cmd_locked(CMD_WRITE_LOCALRAM, tile_x, tile_y, addr32, size, in, size, nullptr);
+    } else {
+        send_cmd_locked(CMD_WRITE_L1, tile_x, tile_y, addr32, size, in, size, nullptr);
     }
 }
 
