@@ -21,6 +21,8 @@ constexpr uint8_t CMD_WRITE_REG = 0x02;
 constexpr uint8_t CMD_READ_L1 = 0x03;
 constexpr uint8_t CMD_WRITE_LOCALRAM = 0x07;
 constexpr uint8_t CMD_READ_LOCALRAM = 0x08;
+constexpr uint8_t CMD_WRITE_DRAM = 0x09;
+constexpr uint8_t CMD_READ_DRAM = 0x0A;
 
 constexpr uint8_t RESP_OK = 0x00;
 
@@ -32,7 +34,15 @@ constexpr const char* kDefaultSocketPath = "/tmp/tt_sim.sock";
 std::mutex g_client_mutex;
 int g_client_fd = -1;
 std::unordered_map<uint64_t, uint32_t> g_soft_reset_shadow;
-bool g_debug_enabled = true;
+bool g_debug_enabled = false;
+constexpr uint8_t kDramTileCoords[][2] = {
+    {0, 0}, {0, 1}, {0, 11},
+    {0, 5}, {0, 6}, {0, 7},
+    {5, 0}, {5, 1}, {5, 11},
+    {5, 2}, {5, 9}, {5, 10},
+    {5, 3}, {5, 4}, {5, 8},
+    {5, 5}, {5, 6}, {5, 7},
+};
 
 uint64_t tile_key(uint32_t x, uint32_t y) {
     return (static_cast<uint64_t>(x) << 32) | y;
@@ -41,6 +51,15 @@ uint64_t tile_key(uint32_t x, uint32_t y) {
 std::string dbg_socket_path() {
     const char* env = std::getenv(kSocketEnvVar);
     return env ? env : kDefaultSocketPath;
+}
+
+bool is_dram_tile(uint32_t x, uint32_t y) {
+    for (const auto &coord : kDramTileCoords) {
+        if (coord[0] == x && coord[1] == y) {
+            return true;
+        }
+    }
+    return false;
 }
 
 void init_debug() {
@@ -236,6 +255,9 @@ bool is_soft_reset_addr(uint64_t addr) {
 }  // namespace
 
 extern "C" {
+void libttsim_dram_rd_bytes(uint32_t x, uint32_t y, uint64_t addr, void* p, uint32_t size);
+void libttsim_dram_wr_bytes(uint32_t x, uint32_t y, uint64_t addr, const void* p, uint32_t size);
+
 void libttsim_init() {
     std::lock_guard<std::mutex> lock(g_client_mutex);
     init_debug();
@@ -257,6 +279,11 @@ uint32_t libttsim_pci_config_rd32(uint32_t bus_device_function, uint32_t offset)
 
 void libttsim_tile_rd_bytes(uint32_t x, uint32_t y, uint64_t addr, void* p, uint32_t size) {
     if (!p || size == 0) {
+        return;
+    }
+
+    if (is_dram_tile(x, y)) {
+        libttsim_dram_rd_bytes(x, y, addr, p, size);
         return;
     }
 
@@ -301,6 +328,11 @@ void libttsim_tile_wr_bytes(uint32_t x, uint32_t y, uint64_t addr, const void* p
         return;
     }
 
+    if (is_dram_tile(x, y)) {
+        libttsim_dram_wr_bytes(x, y, addr, p, size);
+        return;
+    }
+
     std::lock_guard<std::mutex> lock(g_client_mutex);
     dbg_log("wr: tile=(%u,%u) addr=0x%llx size=%u", x, y,
             static_cast<unsigned long long>(addr), size);
@@ -342,6 +374,52 @@ void libttsim_tile_wr_bytes(uint32_t x, uint32_t y, uint64_t addr, const void* p
     } else {
         send_cmd_locked(CMD_WRITE_L1, tile_x, tile_y, addr32, size, in, size, nullptr);
     }
+}
+
+void libttsim_dram_rd_bytes(uint32_t x, uint32_t y, uint64_t addr, void* p, uint32_t size) {
+    if (!p || size == 0) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(g_client_mutex);
+    dbg_log("dram rd: tile=(%u,%u) addr=0x%llx size=%u", x, y,
+            static_cast<unsigned long long>(addr), size);
+
+    if (addr > 0xFFFFFFFFull) {
+        std::memset(p, 0, size);
+        return;
+    }
+
+    uint32_t addr32 = static_cast<uint32_t>(addr);
+    uint8_t* out = static_cast<uint8_t*>(p);
+    uint8_t tile_x = static_cast<uint8_t>(x);
+    uint8_t tile_y = static_cast<uint8_t>(y);
+    bool ok = send_cmd_read_locked(CMD_READ_DRAM, tile_x, tile_y, addr32, size, out);
+
+    if (!ok) {
+        std::memset(p, 0, size);
+        dbg_log("dram rd: failed, zero-filled");
+    }
+}
+
+void libttsim_dram_wr_bytes(uint32_t x, uint32_t y, uint64_t addr, const void* p, uint32_t size) {
+    if (!p || size == 0) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(g_client_mutex);
+    dbg_log("dram wr: tile=(%u,%u) addr=0x%llx size=%u", x, y,
+            static_cast<unsigned long long>(addr), size);
+
+    if (addr > 0xFFFFFFFFull) {
+        return;
+    }
+
+    uint32_t addr32 = static_cast<uint32_t>(addr);
+    const uint8_t* in = static_cast<const uint8_t*>(p);
+    uint8_t tile_x = static_cast<uint8_t>(x);
+    uint8_t tile_y = static_cast<uint8_t>(y);
+    send_cmd_locked(CMD_WRITE_DRAM, tile_x, tile_y, addr32, size, in, size, nullptr);
 }
 
 void libttsim_clock(uint32_t n_clocks) {
