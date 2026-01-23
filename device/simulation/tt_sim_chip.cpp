@@ -94,7 +94,7 @@ void TTSimChip::write_to_device(CoreCoord core, const void* src, uint64_t l1_des
     std::lock_guard<std::mutex> lock(device_lock);
     log_debug(tt::LogEmulationDriver, "Device writing 0x{:x} bytes to l1_dest 0x{:x} in core {}", size, l1_dest, core.str());
     if (dumped_addrs.insert(l1_dest).second) {
-        log_info(
+        log_debug(
             tt::LogEmulationDriver,
             "Dump write to l1_dest 0x{:x} (size=0x{:x}) core {}: {}",
             l1_dest,
@@ -109,16 +109,15 @@ void TTSimChip::write_to_device(CoreCoord core, const void* src, uint64_t l1_des
 void TTSimChip::read_from_device(CoreCoord core, void* dest, uint64_t l1_src, uint32_t size) {
     std::lock_guard<std::mutex> lock(device_lock);
     tt_xy_pair translate_core = soc_descriptor_.translate_coord_to(core, CoordSystem::TRANSLATED);
-    // if ((translate_core.x == 18 && translate_core.y == 18) || (translate_core.x == 18 && translate_core.y == 19)) {
-    //     log_info(
-    //         tt::LogEmulationDriver,
-    //         "read size {}, l1_dest 0x{:x} x {} y {} ",
-    //         size,
-    //         l1_src,
-    //         translate_core.x,
-    //         translate_core.y);
-    // }
     pfn_libttsim_tile_rd_bytes(translate_core.x, translate_core.y, l1_src, dest, size);
+    std::vector<std::uint8_t> dump(size);
+    log_debug(
+        tt::LogEmulationDriver,
+        "Dump read from l1_src 0x{:x} (size=0x{:x}) core {}: {}",
+        l1_src,
+        size,
+        core.str(),
+        bytes_to_hex(dest, size));
 
     pfn_libttsim_clock(10);
 }

@@ -6,7 +6,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <cstdio>
+#include <iomanip>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <unordered_map>
 
@@ -80,6 +82,19 @@ void dbg_log(const char* fmt, ...) {
     std::vfprintf(stderr, fmt, args);
     std::fputc('\n', stderr);
     va_end(args);
+}
+
+std::string dump_bytes(const uint8_t* data, uint32_t size) {
+    std::ostringstream out;
+    out << std::hex << std::setfill('0');
+    uint32_t limit = size > 64 ? 64 : size;
+    for (uint32_t i = 0; i < limit; ++i) {
+        if (i != 0) {
+            out << ' ';
+        }
+        out << std::setw(2) << static_cast<unsigned>(data[i]);
+    }
+    return out.str();
 }
 
 void close_client_locked() {
@@ -399,7 +414,10 @@ void libttsim_dram_rd_bytes(uint32_t x, uint32_t y, uint64_t addr, void* p, uint
     if (!ok) {
         std::memset(p, 0, size);
         dbg_log("dram rd: failed, zero-filled");
+        return;
     }
+
+    dbg_log("dram rd: ok size=%u dump=%s", size, dump_bytes(out, size).c_str());
 }
 
 void libttsim_dram_wr_bytes(uint32_t x, uint32_t y, uint64_t addr, const void* p, uint32_t size) {
