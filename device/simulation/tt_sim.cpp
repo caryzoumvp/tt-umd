@@ -21,8 +21,6 @@ namespace {
 constexpr uint8_t CMD_WRITE_L1 = 0x01;
 constexpr uint8_t CMD_WRITE_REG = 0x02;
 constexpr uint8_t CMD_READ_L1 = 0x03;
-constexpr uint8_t CMD_WRITE_LOCALRAM = 0x07;
-constexpr uint8_t CMD_READ_LOCALRAM = 0x08;
 constexpr uint8_t CMD_WRITE_DRAM = 0x09;
 constexpr uint8_t CMD_READ_DRAM = 0x0A;
 
@@ -258,11 +256,6 @@ bool send_cmd_read_locked(
     return true;
 }
 
-bool is_localram_addr(uint32_t addr) {
-    uint32_t bank = (addr >> 28) & 0xFu;
-    return bank >= 1 && bank <= 4;
-}
-
 bool is_soft_reset_addr(uint64_t addr) {
     return addr == static_cast<uint64_t>(kDebugSoftResetAddr);
 }
@@ -325,12 +318,7 @@ void libttsim_tile_rd_bytes(uint32_t x, uint32_t y, uint64_t addr, void* p, uint
     uint8_t* out = static_cast<uint8_t*>(p);
     uint8_t tile_x = static_cast<uint8_t>(x);
     uint8_t tile_y = static_cast<uint8_t>(y);
-    bool ok = false;
-    if (is_localram_addr(addr32)) {
-        ok = send_cmd_read_locked(CMD_READ_LOCALRAM, tile_x, tile_y, addr32, size, out);
-    } else {
-        ok = send_cmd_read_locked(CMD_READ_L1, tile_x, tile_y, addr32, size, out);
-    }
+    bool ok = send_cmd_read_locked(CMD_READ_L1, tile_x, tile_y, addr32, size, out);
 
     if (!ok) {
         std::memset(p, 0, size);
@@ -384,11 +372,7 @@ void libttsim_tile_wr_bytes(uint32_t x, uint32_t y, uint64_t addr, const void* p
     uint8_t tile_x = static_cast<uint8_t>(x);
     uint8_t tile_y = static_cast<uint8_t>(y);
 
-    if (is_localram_addr(addr32)) {
-        send_cmd_locked(CMD_WRITE_LOCALRAM, tile_x, tile_y, addr32, size, in, size, nullptr);
-    } else {
-        send_cmd_locked(CMD_WRITE_L1, tile_x, tile_y, addr32, size, in, size, nullptr);
-    }
+    send_cmd_locked(CMD_WRITE_L1, tile_x, tile_y, addr32, size, in, size, nullptr);
 }
 
 void libttsim_dram_rd_bytes(uint32_t x, uint32_t y, uint64_t addr, void* p, uint32_t size) {
