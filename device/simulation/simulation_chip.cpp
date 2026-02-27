@@ -4,6 +4,7 @@
 
 #include "umd/device/simulation/simulation_chip.hpp"
 
+#include <algorithm>
 #include <stdexcept>
 #include <tt-logger/tt-logger.hpp>
 
