@@ -34,6 +34,9 @@ constexpr const char* kDefaultSocketPath = "/tmp/tt_sim.sock";
 std::mutex g_client_mutex;
 int g_client_fd = -1;
 std::unordered_map<uint64_t, uint32_t> g_soft_reset_shadow;
+std::unordered_map<uint64_t, uint8_t> g_pci_mem_shadow;
+void (*g_pci_dma_mem_rd_cb)(uint64_t paddr, void* p, uint32_t size) = nullptr;
+void (*g_pci_dma_mem_wr_cb)(uint64_t paddr, const void* p, uint32_t size) = nullptr;
 bool g_debug_enabled = false;
 constexpr uint8_t kDramTileCoords[][2] = {
     {0, 0}, {0, 1}, {0, 11},
@@ -270,6 +273,7 @@ void libttsim_init() {
     std::lock_guard<std::mutex> lock(g_client_mutex);
     init_debug();
     g_soft_reset_shadow.clear();
+    g_pci_mem_shadow.clear();
     connect_client_locked();
 }
 
@@ -277,12 +281,47 @@ void libttsim_exit() {
     std::lock_guard<std::mutex> lock(g_client_mutex);
     close_client_locked();
     g_soft_reset_shadow.clear();
+    g_pci_mem_shadow.clear();
+    g_pci_dma_mem_rd_cb = nullptr;
+    g_pci_dma_mem_wr_cb = nullptr;
 }
 
 uint32_t libttsim_pci_config_rd32(uint32_t bus_device_function, uint32_t offset) {
     (void)bus_device_function;
     (void)offset;
     return 0x401E1E52;
+}
+
+void libttsim_set_pci_dma_mem_callbacks(
+    void (*pfn_pci_dma_mem_rd_bytes)(uint64_t paddr, void* p, uint32_t size),
+    void (*pfn_pci_dma_mem_wr_bytes)(uint64_t paddr, const void* p, uint32_t size)) {
+    std::lock_guard<std::mutex> lock(g_client_mutex);
+    g_pci_dma_mem_rd_cb = pfn_pci_dma_mem_rd_bytes;
+    g_pci_dma_mem_wr_cb = pfn_pci_dma_mem_wr_bytes;
+}
+
+void libttsim_pci_mem_rd_bytes(uint64_t paddr, void* p, uint32_t size) {
+    if (!p || size == 0) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(g_client_mutex);
+    auto* out = static_cast<uint8_t*>(p);
+    for (uint32_t i = 0; i < size; ++i) {
+        const uint64_t addr = paddr + i;
+        const auto it = g_pci_mem_shadow.find(addr);
+        out[i] = (it == g_pci_mem_shadow.end()) ? 0 : it->second;
+    }
+}
+
+void libttsim_pci_mem_wr_bytes(uint64_t paddr, const void* p, uint32_t size) {
+    if (!p || size == 0) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(g_client_mutex);
+    const auto* in = static_cast<const uint8_t*>(p);
+    for (uint32_t i = 0; i < size; ++i) {
+        g_pci_mem_shadow[paddr + i] = in[i];
+    }
 }
 
 void libttsim_tile_rd_bytes(uint32_t x, uint32_t y, uint64_t addr, void* p, uint32_t size) {
