@@ -36,7 +36,13 @@ else()
     message(STATUS "Building device library as SHARED")
 endif()
 add_library(${PROJECT_NAME}::device ALIAS device)
-
+add_library(ttsim SHARED)
+target_sources(
+    ttsim
+    PRIVATE
+        simulation/tt_sim.cpp
+)
+ 
 # Enable unity builds for faster compilation 
 # Note: Requires TT_ENABLE_UNITY_BUILD function from parent project 
 if(COMMAND TT_ENABLE_UNITY_BUILD)
