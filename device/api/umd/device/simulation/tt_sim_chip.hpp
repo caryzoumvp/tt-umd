@@ -36,7 +36,9 @@ public:
     void assert_risc_reset(CoreCoord core, const RiscType selected_riscs) override;
     void deassert_risc_reset(CoreCoord core, const RiscType selected_riscs, bool staggered_start) override;
 
+    TTDevice* get_tt_device() override { return tt_device_.get(); }
     SysmemManager* get_sysmem_manager() override { return tt_device_->get_sysmem_manager(); }
+    TLBManager* get_tlb_manager() override { return tt_device_->get_tlb_manager(); }
 
 private:
     void create_simulator_binary();

@@ -73,6 +73,7 @@ public:
     TTSimCommunicator *get_communicator() { return communicator_.get(); }
 
     SimulationSysmemManager *get_sysmem_manager() { return sysmem_manager_.get(); }
+    TTSimTlbManager *get_tlb_manager() { return tlb_manager_.get(); }
 
     /**
      * Get the architecture implementation.
@@ -83,6 +84,7 @@ public:
     uint64_t bar0_base = 0;
 
 private:
+    bool is_slow_path_enabled() const { return slow_path_mode_; }
     void initialize_sysmem_functions();
     void pci_dma_read_bytes(uint64_t paddr, void *p, uint32_t size);
     void pci_dma_write_bytes(uint64_t paddr, const void *p, uint32_t size);
@@ -94,6 +96,7 @@ private:
     std::filesystem::path simulator_directory_;
     SocDescriptor soc_descriptor_;
     ChipId chip_id_;
+    bool slow_path_mode_ = false;
     std::unique_ptr<architecture_implementation> architecture_impl_;
     std::unique_ptr<SimulationSysmemManager> sysmem_manager_;
 

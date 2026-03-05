@@ -4,7 +4,9 @@
 
 #include "umd/device/tt_device/tt_sim_tt_device.hpp"
 
+#include <cstdlib>
 #include <filesystem>
+#include <string_view>
 #include <tt-logger/tt-logger.hpp>
 
 #include "assert.hpp"
@@ -17,6 +19,17 @@ static const uint16_t WH_PCIE_DEVICE_ID = 0x401e;
 static const uint16_t BH_PCIE_DEVICE_ID = 0xb140;
 
 static_assert(!std::is_abstract<TTSimTTDevice>(), "TTSimChip must be non-abstract.");
+
+namespace {
+bool parse_slow_path_env() {
+    const char* env = std::getenv("TT_UMD_TTSIM_SLOW_PATH");
+    if (env == nullptr) {
+        return false;
+    }
+    std::string_view value(env);
+    return !(value.empty() || value == "0" || value == "false" || value == "FALSE" || value == "off" || value == "OFF");
+}
+}  // namespace
 
 std::unique_ptr<TTSimTTDevice> TTSimTTDevice::create(const std::filesystem::path& simulator_directory) {
     auto soc_desc_path = SimulationChip::get_soc_descriptor_path_from_simulator_path(simulator_directory);
@@ -34,10 +47,13 @@ TTSimTTDevice::TTSimTTDevice(
     simulator_directory_(simulator_directory),
     soc_descriptor_(std::move(soc_descriptor)),
     chip_id_(chip_id),
+    slow_path_mode_(parse_slow_path_env()),
     architecture_impl_(architecture_implementation::create(soc_descriptor_.arch)),
     sysmem_manager_(std::make_unique<SimulationSysmemManager>(num_host_mem_channels)) {
     communicator_->initialize();
-    initialize_sysmem_functions();
+    if (!is_slow_path_enabled()) {
+        initialize_sysmem_functions();
+    }
     communicator_->start_sim();
     // Read the PCI ID (first 32 bits of PCI config space).
     uint32_t pci_id = communicator_->pci_config_read32(0, 0);
@@ -59,8 +75,12 @@ TTSimTTDevice::TTSimTTDevice(
         }
     }
 
-    tlb_manager_ = std::make_unique<TTSimTlbManager>(this);
-    get_cached_tlb_window();
+    if (!is_slow_path_enabled()) {
+        tlb_manager_ = std::make_unique<TTSimTlbManager>(this);
+        get_cached_tlb_window();
+    } else {
+        log_info(tt::LogEmulationDriver, "TTSim slow path enabled: bypass TLB setup and use direct tile read/write");
+    }
 }
 
 TTSimTTDevice::~TTSimTTDevice() = default;
@@ -71,12 +91,18 @@ void TTSimTTDevice::close_device() { communicator_->shutdown(); }
 
 void TTSimTTDevice::write_to_device(const void* mem_ptr, tt_xy_pair core, uint64_t addr, uint32_t size) {
     std::lock_guard<std::recursive_mutex> lock(device_lock);
-    get_cached_tlb_window()->write_block_reconfigure(mem_ptr, core, addr, size);
+    if (is_slow_path_enabled()) {
+        communicator_->tile_write_bytes(core.x, core.y, addr, mem_ptr, size);
+    } else {
+        get_cached_tlb_window()->write_block_reconfigure(mem_ptr, core, addr, size);
+    }
 }
 
 void TTSimTTDevice::read_from_device(void* mem_ptr, tt_xy_pair core, uint64_t addr, uint32_t size) {
     std::lock_guard<std::recursive_mutex> lock(device_lock);
-    if (tlb_region_size_) {  // if set, split into requests that do not span TLB regions
+    if (is_slow_path_enabled()) {
+        communicator_->tile_read_bytes(core.x, core.y, addr, mem_ptr, size);
+    } else if (tlb_region_size_) {  // if set, split into requests that do not span TLB regions
         while (size) {
             uint32_t cur_size = std::min(size, tlb_region_size_ - uint32_t(addr & (tlb_region_size_ - 1)));
             communicator_->tile_read_bytes(core.x, core.y, addr, mem_ptr, cur_size);
@@ -236,6 +262,7 @@ void TTSimTTDevice::pci_dma_write_bytes(uint64_t paddr, const void* p, uint32_t 
 }
 
 TlbWindow* TTSimTTDevice::get_cached_tlb_window() {
+    TT_ASSERT(!is_slow_path_enabled(), "Cached TLB window is unavailable in TTSim slow path mode");
     if (cached_tlb_window_ == nullptr) {
         switch (architecture_impl_->get_architecture()) {
             case ARCH::BLACKHOLE:
