@@ -122,9 +122,15 @@ if(TT_UMD_ENABLE_CLANG_TIDY)
     endif()
 endif()
 
+# Inherit TT_X86_64_MARCH from the parent tt-metal project when available.
+# When UMD is built standalone, default to x86-64-v3 for backward compatibility.
+if(NOT DEFINED TT_X86_64_MARCH)
+    set(TT_X86_64_MARCH "x86-64-v3")
+endif()
+
 # Enable all warnings and treat them as errors
 add_compile_options(
-    "$<$<STREQUAL:${CMAKE_SYSTEM_PROCESSOR},x86_64>:-march=x86-64-v3>"
+    "$<$<AND:$<STREQUAL:${CMAKE_SYSTEM_PROCESSOR},x86_64>,$<BOOL:${TT_X86_64_MARCH}>>:-march=${TT_X86_64_MARCH}>"
     -Wall
     -Werror
     -Wno-sign-compare
