@@ -23,6 +23,7 @@ constexpr uint8_t CMD_WRITE_REG = 0x02;
 constexpr uint8_t CMD_READ_L1 = 0x03;
 constexpr uint8_t CMD_WRITE_DRAM = 0x09;
 constexpr uint8_t CMD_READ_DRAM = 0x0A;
+constexpr uint8_t CMD_WRITE_L1_MCAST = 0x0B;
 
 constexpr uint8_t RESP_OK = 0x00;
 
@@ -259,6 +260,67 @@ bool send_cmd_read_locked(
     return true;
 }
 
+bool send_cmd_mcast_write_locked(
+    uint8_t src_x,
+    uint8_t src_y,
+    uint8_t start_x,
+    uint8_t start_y,
+    uint8_t end_x,
+    uint8_t end_y,
+    uint8_t noc_index,
+    uint32_t noc_ctrl,
+    uint32_t addr,
+    uint32_t size,
+    const uint8_t* payload,
+    size_t payload_len) {
+    if (!connect_client_locked()) {
+        dbg_log("mcast send_cmd: connect failed src=(%u,%u)", src_x, src_y);
+        return false;
+    }
+
+    uint8_t header[11];
+    header[0] = CMD_WRITE_L1_MCAST;
+    header[1] = src_x;
+    header[2] = src_y;
+    encode_u32_le(header + 3, addr);
+    encode_u32_le(header + 7, size);
+
+    uint8_t meta[9];
+    meta[0] = start_x;
+    meta[1] = start_y;
+    meta[2] = end_x;
+    meta[3] = end_y;
+    meta[4] = noc_index;
+    encode_u32_le(meta + 5, noc_ctrl);
+
+    if (!write_exact(g_client_fd, header, sizeof(header)) ||
+        !write_exact(g_client_fd, meta, sizeof(meta)) ||
+        (payload_len > 0 && !write_exact(g_client_fd, payload, payload_len))) {
+        close_client_locked();
+        return false;
+    }
+
+    uint8_t status = 0;
+    if (!read_exact(g_client_fd, &status, 1)) {
+        close_client_locked();
+        return false;
+    }
+
+    dbg_log(
+        "mcast send_cmd: src=(%u,%u) rect=(%u,%u)->(%u,%u) noc=%u addr=0x%08x size=%u status=0x%02x",
+        src_x,
+        src_y,
+        start_x,
+        start_y,
+        end_x,
+        end_y,
+        noc_index,
+        addr,
+        size,
+        status);
+    return status == RESP_OK;
+}
+
 bool is_soft_reset_addr(uint64_t addr) {
     return addr == static_cast<uint64_t>(kDebugSoftResetAddr);
 }
@@ -268,6 +330,18 @@ bool is_soft_reset_addr(uint64_t addr) {
 extern "C" {
 void libttsim_dram_rd_bytes(uint32_t x, uint32_t y, uint64_t addr, void* p, uint32_t size);
 void libttsim_dram_wr_bytes(uint32_t x, uint32_t y, uint64_t addr, const void* p, uint32_t size);
+void libttsim_tile_noc_mcast_wr_bytes(
+    uint32_t src_x,
+    uint32_t src_y,
+    uint32_t start_x,
+    uint32_t start_y,
+    uint32_t end_x,
+    uint32_t end_y,
+    uint32_t noc_index,
+    uint32_t noc_ctrl,
+    uint64_t addr,
+    const void* p,
+    uint32_t size);
 
 void libttsim_init() {
     std::lock_guard<std::mutex> lock(g_client_mutex);
@@ -412,6 +486,55 @@ void libttsim_tile_wr_bytes(uint32_t x, uint32_t y, uint64_t addr, const void* p
     uint8_t tile_y = static_cast<uint8_t>(y);
 
     send_cmd_locked(CMD_WRITE_L1, tile_x, tile_y, addr32, size, in, size, nullptr);
+}
+
+void libttsim_tile_noc_mcast_wr_bytes(
+    uint32_t src_x,
+    uint32_t src_y,
+    uint32_t start_x,
+    uint32_t start_y,
+    uint32_t end_x,
+    uint32_t end_y,
+    uint32_t noc_index,
+    uint32_t noc_ctrl,
+    uint64_t addr,
+    const void* p,
+    uint32_t size) {
+    if (!p || size == 0) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(g_client_mutex);
+    dbg_log(
+        "mcast wr: src=(%u,%u) rect=(%u,%u)->(%u,%u) noc=%u ctrl=0x%x addr=0x%llx size=%u",
+        src_x,
+        src_y,
+        start_x,
+        start_y,
+        end_x,
+        end_y,
+        noc_index,
+        noc_ctrl,
+        static_cast<unsigned long long>(addr),
+        size);
+
+    if (addr > 0xFFFFFFFFull) {
+        return;
+    }
+
+    send_cmd_mcast_write_locked(
+        static_cast<uint8_t>(src_x),
+        static_cast<uint8_t>(src_y),
+        static_cast<uint8_t>(start_x),
+        static_cast<uint8_t>(start_y),
+        static_cast<uint8_t>(end_x),
+        static_cast<uint8_t>(end_y),
+        static_cast<uint8_t>(noc_index),
+        noc_ctrl,
+        static_cast<uint32_t>(addr),
+        size,
+        static_cast<const uint8_t*>(p),
+        size);
 }
 
 void libttsim_dram_rd_bytes(uint32_t x, uint32_t y, uint64_t addr, void* p, uint32_t size) {

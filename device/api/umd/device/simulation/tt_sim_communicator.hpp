@@ -66,6 +66,18 @@ public:
      * @param size Number of bytes to write
      */
     void tile_write_bytes(uint32_t x, uint32_t y, uint64_t addr, const void *data, uint32_t size);
+    void tile_noc_multicast_write_bytes(
+        uint32_t src_x,
+        uint32_t src_y,
+        uint32_t start_x,
+        uint32_t start_y,
+        uint32_t end_x,
+        uint32_t end_y,
+        uint32_t noc_index,
+        uint32_t noc_ctrl,
+        uint64_t addr,
+        const void *data,
+        uint32_t size);
 
     /**
      * Read data from PCI memory.
@@ -147,6 +159,18 @@ private:
     void (*pfn_libttsim_pci_mem_wr_bytes_)(uint64_t paddr, const void *p, uint32_t size) = nullptr;
     void (*pfn_libttsim_tile_rd_bytes_)(uint32_t x, uint32_t y, uint64_t addr, void *p, uint32_t size) = nullptr;
     void (*pfn_libttsim_tile_wr_bytes_)(uint32_t x, uint32_t y, uint64_t addr, const void *p, uint32_t size) = nullptr;
+    void (*pfn_libttsim_tile_noc_mcast_wr_bytes_)(
+        uint32_t src_x,
+        uint32_t src_y,
+        uint32_t start_x,
+        uint32_t start_y,
+        uint32_t end_x,
+        uint32_t end_y,
+        uint32_t noc_index,
+        uint32_t noc_ctrl,
+        uint64_t addr,
+        const void *p,
+        uint32_t size) = nullptr;
     void (*pfn_libttsim_clock_)(uint32_t n_clocks) = nullptr;
     void (*pfn_libttsim_set_pci_dma_mem_callbacks_)(
         void (*pfn_pci_dma_mem_rd_bytes)(uint64_t paddr, void *p, uint32_t size),

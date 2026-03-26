@@ -69,6 +69,36 @@ void TTSimCommunicator::tile_write_bytes(uint32_t x, uint32_t y, uint64_t addr, 
     pfn_libttsim_tile_wr_bytes_(x, y, addr, data, size);
 }
 
+void TTSimCommunicator::tile_noc_multicast_write_bytes(
+    uint32_t src_x,
+    uint32_t src_y,
+    uint32_t start_x,
+    uint32_t start_y,
+    uint32_t end_x,
+    uint32_t end_y,
+    uint32_t noc_index,
+    uint32_t noc_ctrl,
+    uint64_t addr,
+    const void *data,
+    uint32_t size) {
+    std::lock_guard<std::mutex> lock(device_lock_);
+    log_debug(
+        tt::LogUMD,
+        "Device multicast writing {} bytes to l1_dest {} from ({},{}) into rect ({},{})->({},{}) on noc {}",
+        size,
+        addr,
+        src_x,
+        src_y,
+        start_x,
+        start_y,
+        end_x,
+        end_y,
+        noc_index);
+    pfn_libttsim_tile_noc_mcast_wr_bytes_(
+        src_x, src_y, start_x, start_y, end_x, end_y, noc_index, noc_ctrl,
+        addr, data, size);
+}
+
 void TTSimCommunicator::tile_read_bytes(uint32_t x, uint32_t y, uint64_t addr, void *data, uint32_t size) {
     std::lock_guard<std::mutex> lock(device_lock_);
     pfn_libttsim_tile_rd_bytes_(x, y, addr, data, size);
@@ -185,6 +215,7 @@ void TTSimCommunicator::load_simulator_library(const std::filesystem::path &path
     DLSYM_FUNCTION(libttsim_pci_mem_wr_bytes)
     DLSYM_FUNCTION(libttsim_tile_rd_bytes)
     DLSYM_FUNCTION(libttsim_tile_wr_bytes)
+    DLSYM_FUNCTION(libttsim_tile_noc_mcast_wr_bytes)
     DLSYM_FUNCTION(libttsim_clock)
     DLSYM_FUNCTION(libttsim_set_pci_dma_mem_callbacks)
 }

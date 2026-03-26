@@ -8,8 +8,10 @@
 #include <tt-logger/tt-logger.hpp>
 
 #include "assert.hpp"
+#include "noc_access.hpp"
 #include "umd/device/simulation/rtl_simulation_chip.hpp"
 #include "umd/device/simulation/tt_sim_chip.hpp"
+#include "umd/device/tt_device/tt_sim_tt_device.hpp"
 #include "utils.hpp"
 
 namespace tt::umd {
@@ -78,10 +80,45 @@ void SimulationChip::noc_multicast_write(
     if (core_start.core_type != CoreType::TENSIX || core_end.core_type != CoreType::TENSIX) {
         TT_THROW("noc_multicast_write is only supported for Tensix cores.");
     }
-    // TODO: investigate how to do multicast in Simulation, both RTL sim and TTSim.
-    // Until then, do individual writes to each core in the range.
+
+    auto* tt_sim_chip = dynamic_cast<TTSimChip*>(this);
+    auto* tt_sim_device = tt_sim_chip
+        ? static_cast<TTSimTTDevice*>(tt_sim_chip->get_tt_device())
+        : nullptr;
     const tt_xy_pair translated_start = soc_descriptor_.translate_coord_to(core_start, CoordSystem::TRANSLATED);
     const tt_xy_pair translated_end = soc_descriptor_.translate_coord_to(core_end, CoordSystem::TRANSLATED);
+
+    if (tt_sim_device && arch_name == tt::ARCH::WORMHOLE_B0) {
+        constexpr uint32_t NOC_CMD_WR = 0x2;
+        constexpr uint32_t NOC_CMD_BRCST_PACKET = 1u << 5;
+        constexpr uint32_t NOC_CMD_PATH_RESERVE = 1u << 8;
+        constexpr uint32_t NOC_CMD_BRCST_XY_XMAJOR = 0u << 16;
+        const uint32_t noc_index = is_selected_noc1() ? 1u : 0u;
+        const uint32_t noc_ctrl =
+            NOC_CMD_WR | NOC_CMD_BRCST_PACKET |
+            NOC_CMD_PATH_RESERVE | NOC_CMD_BRCST_XY_XMAJOR;
+
+        // Host-initiated multicast enters the fabric from the PCIe endpoint.
+        const tt_xy_pair translated_src =
+            noc_index == 0 ? tt_xy_pair(0, 3) : tt_xy_pair(9, 8);
+
+        tt_sim_device->get_communicator()->tile_noc_multicast_write_bytes(
+            translated_src.x,
+            translated_src.y,
+            translated_start.x,
+            translated_start.y,
+            translated_end.x,
+            translated_end.y,
+            noc_index,
+            noc_ctrl,
+            addr,
+            dst,
+            static_cast<uint32_t>(size));
+        return;
+    }
+
+    // Fallback for simulation backends that still do not expose native
+    // multicast over the transport.
     for (uint32_t x = translated_start.x; x <= translated_end.x; ++x) {
         for (uint32_t y = translated_start.y; y <= translated_end.y; ++y) {
             // Since we are doing set of unicasts, we must skip cores that are not actual Tensix cores.
