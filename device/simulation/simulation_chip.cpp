@@ -4,6 +4,7 @@
 
 #include "umd/device/simulation/simulation_chip.hpp"
 
+#include <cstdlib>
 #include <stdexcept>
 #include <tt-logger/tt-logger.hpp>
 
@@ -15,6 +16,19 @@
 #include "utils.hpp"
 
 namespace tt::umd {
+
+namespace {
+
+bool use_native_noc_multicast_write() {
+    const char* env = std::getenv("TT_SIM_USE_NATIVE_NOC_MULTICAST_WRITE");
+    if (env == nullptr) {
+        return true;
+    }
+
+    return env[0] != '0' && env[0] != '\0' && env[0] != 'f' && env[0] != 'F' && env[0] != 'n' && env[0] != 'N';
+}
+
+}  // namespace
 
 std::unique_ptr<SimulationChip> SimulationChip::create(
     const std::filesystem::path& simulator_directory,
@@ -88,7 +102,8 @@ void SimulationChip::noc_multicast_write(
     const tt_xy_pair translated_start = soc_descriptor_.translate_coord_to(core_start, CoordSystem::TRANSLATED);
     const tt_xy_pair translated_end = soc_descriptor_.translate_coord_to(core_end, CoordSystem::TRANSLATED);
 
-    if (tt_sim_device && arch_name == tt::ARCH::WORMHOLE_B0) {
+    if (tt_sim_device && arch_name == tt::ARCH::WORMHOLE_B0 && use_native_noc_multicast_write()) {
+        log_info(tt::LogUMD, "Using native simulation noc_multicast_write via tile_noc_multicast_write_bytes");
         constexpr uint32_t NOC_CMD_WR = 0x2;
         constexpr uint32_t NOC_CMD_BRCST_PACKET = 1u << 5;
         constexpr uint32_t NOC_CMD_PATH_RESERVE = 1u << 8;
@@ -119,6 +134,7 @@ void SimulationChip::noc_multicast_write(
 
     // Fallback for simulation backends that still do not expose native
     // multicast over the transport.
+    log_info(tt::LogUMD, "Using fallback simulation noc_multicast_write via per-core unicast writes");
     for (uint32_t x = translated_start.x; x <= translated_end.x; ++x) {
         for (uint32_t y = translated_start.y; y <= translated_end.y; ++y) {
             // Since we are doing set of unicasts, we must skip cores that are not actual Tensix cores.
