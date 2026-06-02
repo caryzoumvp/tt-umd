@@ -45,7 +45,7 @@ void TTSimChip::close_device() { tt_device_->close_device(); }
 void TTSimChip::write_to_device(CoreCoord core, const void* src, uint64_t l1_dest, uint32_t size) {
     std::lock_guard<std::mutex> lock(device_lock);
     const auto translated_core = soc_descriptor_.translate_coord_to(core, CoordSystem::TRANSLATED);
-    log_info(
+    log_debug(
         tt::LogUMD,
         "TTSimChip::write_to_device core=({},{})->translated=({},{}) addr=0x{:x} size={}",
         core.x,
@@ -64,7 +64,7 @@ void TTSimChip::read_from_device(CoreCoord core, void* dest, uint64_t l1_src, ui
 
 void TTSimChip::send_tensix_risc_reset(tt_xy_pair translated_core, const TensixSoftResetOptions& soft_resets) {
     std::lock_guard<std::mutex> lock(device_lock);
-    log_info(
+    log_debug(
         tt::LogUMD,
         "TTSimChip::send_tensix_risc_reset translated=({},{}) soft_resets=0x{:x}",
         translated_core.x,
@@ -74,7 +74,7 @@ void TTSimChip::send_tensix_risc_reset(tt_xy_pair translated_core, const TensixS
 }
 
 void TTSimChip::send_tensix_risc_reset(const TensixSoftResetOptions& soft_resets) {
-    log_info(
+    log_debug(
         tt::LogUMD,
         "TTSimChip::send_tensix_risc_reset all_tiles soft_resets=0x{:x}",
         static_cast<uint32_t>(soft_resets));
@@ -84,7 +84,7 @@ void TTSimChip::send_tensix_risc_reset(const TensixSoftResetOptions& soft_resets
 void TTSimChip::assert_risc_reset(CoreCoord core, const RiscType selected_riscs) {
     std::lock_guard<std::mutex> lock(device_lock);
     const auto translated_core = soc_descriptor_.translate_coord_to(core, CoordSystem::TRANSLATED);
-    log_info(
+    log_debug(
         tt::LogUMD,
         "TTSimChip::assert_risc_reset core=({},{})->translated=({},{}) riscs=0x{:x}",
         core.x,
@@ -98,7 +98,7 @@ void TTSimChip::assert_risc_reset(CoreCoord core, const RiscType selected_riscs)
 void TTSimChip::deassert_risc_reset(CoreCoord core, const RiscType selected_riscs, bool staggered_start) {
     std::lock_guard<std::mutex> lock(device_lock);
     const auto translated_core = soc_descriptor_.translate_coord_to(core, CoordSystem::TRANSLATED);
-    log_info(
+    log_debug(
         tt::LogUMD,
         "TTSimChip::deassert_risc_reset core=({},{})->translated=({},{}) riscs=0x{:x} staggered_start={}",
         core.x,
