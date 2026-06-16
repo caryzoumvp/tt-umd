@@ -145,8 +145,14 @@ if(NOT DEFINED CMAKE_COMPILE_WARNING_AS_ERROR)
     set(CMAKE_COMPILE_WARNING_AS_ERROR ON)
 endif()
 
+# Inherit TT_X86_64_MARCH from the parent tt-metal project when available.
+# When UMD is built standalone, default to x86-64-v3 for backward compatibility.
+if(NOT DEFINED TT_X86_64_MARCH)
+    set(TT_X86_64_MARCH "x86-64-v3")
+endif()
+
 add_compile_options(
-    "$<$<STREQUAL:${CMAKE_SYSTEM_PROCESSOR},x86_64>:-march=x86-64-v3>"
+    "$<$<AND:$<STREQUAL:${CMAKE_SYSTEM_PROCESSOR},x86_64>,$<BOOL:${TT_X86_64_MARCH}>>:-march=${TT_X86_64_MARCH}>"
     -Wall
     -Wno-sign-compare
 )
