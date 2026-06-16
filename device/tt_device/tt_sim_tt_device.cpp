@@ -35,6 +35,15 @@ static_assert(!std::is_abstract<TTSimTTDevice>(), "TTSimChip must be non-abstrac
 
 namespace {
 
+bool parse_slow_path_env() {
+    const char* env = std::getenv("TT_UMD_TTSIM_SLOW_PATH");
+    if (env == nullptr) {
+        return false;
+    }
+    std::string_view value(env);
+    return !(value.empty() || value == "0" || value == "false" || value == "FALSE" || value == "off" || value == "OFF");
+}
+
 bool sim_dram_teleport_enabled() {
     // Cache the result since this is called on every device read/write.
     static const bool enabled = [] {
@@ -46,6 +55,14 @@ bool sim_dram_teleport_enabled() {
         return value == "1" || value == "true" || value == "TRUE" || value == "on" || value == "ON";
     }();
     return enabled;
+}
+
+bool is_soft_reset_register(architecture_implementation* architecture_impl, uint64_t addr) {
+    return addr == architecture_impl->get_tensix_soft_reset_addr();
+}
+
+bool is_low_l1_control_region(uint64_t addr) {
+    return addr < 0x2000;
 }
 
 }  // namespace
@@ -84,6 +101,7 @@ TTSimTTDevice::TTSimTTDevice(
         std::make_unique<TTSimCommunicator>(simulator_directory, copy_sim_binary, static_cast<uint32_t>(chip_id))),
     simulator_directory_(simulator_directory),
     chip_id_(chip_id),
+    slow_path_mode_(parse_slow_path_env()),
     sysmem_manager_(std::make_unique<SimulationSysmemManager>(num_host_mem_channels, soc_descriptor.arch)) {
     set_soc_descriptor(soc_descriptor);
     // Populate the base-class arch field from the soc descriptor. TTSim does not go through
@@ -137,22 +155,26 @@ TTSimTTDevice::TTSimTTDevice(
     static constexpr size_t SIZE_2MB = 2 * 1024 * 1024;
     static constexpr size_t SIZE_16MB = 16 * 1024 * 1024;
     static constexpr size_t SIZE_4GB = 4ULL * 1024 * 1024 * 1024;
-    switch (arch) {
-        case tt::ARCH::BLACKHOLE:
-            cached_tlb_window_ = TTSimTTDevice::get_io_window({}, TlbMapping::WC, SIZE_2MB);
-            break;
-        case tt::ARCH::WORMHOLE_B0:
-            cached_tlb_window_ = TTSimTTDevice::get_io_window({}, TlbMapping::WC, SIZE_16MB);
-            break;
-        case tt::ARCH::QUASAR:
-            cached_tlb_window_ = TTSimTTDevice::get_io_window({}, TlbMapping::WC, SIZE_4GB);
-            break;
-        default:
-            log_debug(
-                LogUMD,
-                "Architecture {} does not support TLB allocation, leaving cached_tlb_window_ null.",
-                tt::arch_to_str(arch));
-            break;
+    if (!is_slow_path_enabled()) {
+        switch (arch) {
+            case tt::ARCH::BLACKHOLE:
+                cached_tlb_window_ = TTSimTTDevice::get_io_window({}, TlbMapping::WC, SIZE_2MB);
+                break;
+            case tt::ARCH::WORMHOLE_B0:
+                cached_tlb_window_ = TTSimTTDevice::get_io_window({}, TlbMapping::WC, SIZE_16MB);
+                break;
+            case tt::ARCH::QUASAR:
+                cached_tlb_window_ = TTSimTTDevice::get_io_window({}, TlbMapping::WC, SIZE_4GB);
+                break;
+            default:
+                log_debug(
+                    LogUMD,
+                    "Architecture {} does not support TLB allocation, leaving cached_tlb_window_ null.",
+                    tt::arch_to_str(arch));
+                break;
+        }
+    } else {
+        log_info(tt::LogEmulationDriver, "TTSim slow path enabled: bypassing simulated PCI/TLB data path");
     }
 }
 
@@ -191,7 +213,11 @@ void TTSimTTDevice::write_to_device(const void* mem_ptr, tt_xy_pair core, uint64
             return;
         }
     }
-    if (get_arch() != tt::ARCH::QUASAR && cached_tlb_window_) {
+    if (
+        is_slow_path_enabled() || is_soft_reset_register(architecture_impl_.get(), addr) || is_low_l1_control_region(addr) ||
+        cached_tlb_window_ == nullptr) {
+        communicator_->tile_write_bytes(core.x, core.y, addr, mem_ptr, size);
+    } else if (get_arch() != tt::ARCH::QUASAR) {
         cached_tlb_window_->write_block_reconfigure(mem_ptr, core, addr, size, get_selected_noc_id());
     } else {
         communicator_->tile_write_bytes(core.x, core.y, addr, mem_ptr, size);
@@ -212,7 +238,9 @@ void TTSimTTDevice::read_from_device(void* mem_ptr, tt_xy_pair core, uint64_t ad
             return;
         }
     }
-    if (get_arch() != tt::ARCH::QUASAR && cached_tlb_window_) {
+    if (is_slow_path_enabled() || cached_tlb_window_ == nullptr) {
+        communicator_->tile_read_bytes(core.x, core.y, addr, mem_ptr, size);
+    } else if (get_arch() != tt::ARCH::QUASAR) {
         cached_tlb_window_->read_block_reconfigure(mem_ptr, core, addr, size, get_selected_noc_id());
     } else {
         communicator_->tile_read_bytes(core.x, core.y, addr, mem_ptr, size);

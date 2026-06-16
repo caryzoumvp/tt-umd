@@ -6,7 +6,9 @@
 
 #include <fmt/format.h>
 
+#include <cstdlib>
 #include <mutex>
+#include <string_view>
 #include <tt-logger/tt-logger.hpp>
 
 #include "tracy.hpp"
@@ -14,6 +16,7 @@
 #include "umd/device/chip_helpers/sysmem_manager.hpp"
 #include "umd/device/soc_descriptor.hpp"
 #include "umd/device/tt_device/simulation_device_factory.hpp"
+#include "umd/device/tt_device/tt_sim_tt_device.hpp"
 #include "umd/device/types/arch.hpp"
 #include "umd/device/types/core_coordinates.hpp"
 #include "umd/device/utils/error.hpp"
@@ -101,21 +104,63 @@ void SimulationChip::dma_multicast_write(
     UMD_THROW(error::RuntimeError, "dma_multicast_write is not supported in SimulationChip.");
 }
 
+namespace {
+bool use_native_noc_multicast_write() {
+    const char* env = std::getenv("TT_SIM_USE_NATIVE_NOC_MULTICAST_WRITE");
+    return env != nullptr && env[0] != '\0' && std::string_view(env) != "0";
+}
+}  // namespace
+
 void SimulationChip::noc_multicast_write(
     const void* src, size_t size, CoreCoord core_start, CoreCoord core_end, uint64_t addr) {
-    // TODO: Support other core types once needed.
     if (core_start.core_type != CoreType::TENSIX || core_end.core_type != CoreType::TENSIX) {
         UMD_THROW(error::RuntimeError, "noc_multicast_write is only supported for Tensix cores.");
     }
-    // TODO: investigate how to do multicast in Simulation, both RTL sim and TTSim.
-    // Until then, do individual writes to each core in the range.
+
     const tt_xy_pair translated_start = get_soc_descriptor().translate_chip_coord_to_translated(core_start);
     const tt_xy_pair translated_end = get_soc_descriptor().translate_chip_coord_to_translated(core_end);
+
+    auto* tt_sim_device = dynamic_cast<TTSimTTDevice*>(tt_device_.get());
+    if (tt_sim_device != nullptr && get_soc_descriptor().arch == tt::ARCH::WORMHOLE_B0 && use_native_noc_multicast_write()) {
+        constexpr uint32_t kNocCmdWr = 0x2;
+        constexpr uint32_t kNocCmdBrcstPacket = 1u << 5;
+        constexpr uint32_t kNocCmdPathReserve = 1u << 8;
+        constexpr uint32_t kNocCmdBrcstXyXmajor = 0u << 16;
+        constexpr uint32_t kNocIndex = 0u;
+        const uint32_t noc_ctrl = kNocCmdWr | kNocCmdBrcstPacket | kNocCmdPathReserve | kNocCmdBrcstXyXmajor;
+
+        // Host-initiated multicast enters through the PCIe/dispatch-side endpoint on Wormhole B0.
+        constexpr tt_xy_pair kTranslatedSrc = {0, 3};
+
+        log_info(
+            LogUMD,
+            "Using native simulation noc_multicast_write via tile_noc_multicast_write_bytes src=({}, {}) rect=({}, {})->({}, {}) addr=0x{:x} size={}",
+            kTranslatedSrc.x,
+            kTranslatedSrc.y,
+            translated_start.x,
+            translated_start.y,
+            translated_end.x,
+            translated_end.y,
+            addr,
+            size);
+
+        tt_sim_device->get_communicator()->tile_noc_multicast_write_bytes(
+            kTranslatedSrc.x,
+            kTranslatedSrc.y,
+            translated_start.x,
+            translated_start.y,
+            translated_end.x,
+            translated_end.y,
+            kNocIndex,
+            noc_ctrl,
+            addr,
+            src,
+            static_cast<uint32_t>(size));
+        return;
+    }
+
     for (uint32_t x = translated_start.x; x <= translated_end.x; ++x) {
         for (uint32_t y = translated_start.y; y <= translated_end.y; ++y) {
-            // Since we are doing set of unicasts, we must skip cores that are not actual Tensix cores.
-            // These are in columns where x = 8 (ARC core, L2CPU) and x = 9 (GDDR).
-            // TODO: investigate proper multicast support for simulations so we can remove this workaround.
             if (get_soc_descriptor().arch == tt::ARCH::BLACKHOLE && (x == 8 || x == 9)) {
                 continue;
             }

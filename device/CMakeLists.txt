@@ -37,6 +37,15 @@ else()
 endif()
 add_library(${PROJECT_NAME}::tt-umd ALIAS tt-umd)
 
+if(TT_UMD_BUILD_SIMULATION)
+    add_library(ttsim SHARED)
+    target_sources(
+        ttsim
+        PRIVATE
+            simulation/tt_sim.cpp
+    )
+endif()
+
 # Set version
 set_target_properties(
     tt-umd
@@ -355,6 +364,16 @@ if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.23 AND NOT TT_UMD_BUILD_STATIC)
             COMPONENT umd-dev
     )
 
+    if(TT_UMD_BUILD_SIMULATION)
+        install(
+            TARGETS
+                ttsim
+            LIBRARY
+                DESTINATION ${CMAKE_INSTALL_LIBDIR}
+                COMPONENT umd-runtime
+        )
+    endif()
+
     install(
         EXPORT ${PROJECT_NAME}Targets
         FILE ${PROJECT_NAME}Targets.cmake
@@ -380,5 +399,23 @@ else()
         PROPERTIES
             LIBRARY_OUTPUT_DIRECTORY
                 ${PROJECT_BINARY_DIR}/lib
+    )
+endif()
+
+if(TT_UMD_BUILD_SIMULATION)
+    set_target_properties(
+        ttsim
+        PROPERTIES
+            LIBRARY_OUTPUT_DIRECTORY
+                ${PROJECT_BINARY_DIR}/lib
+    )
+    add_custom_command(
+        TARGET ttsim
+        POST_BUILD
+        COMMAND
+            ${CMAKE_COMMAND} -E make_directory ${CMAKE_SOURCE_DIR}/sim
+        COMMAND
+            ${CMAKE_COMMAND} -E copy $<TARGET_FILE:ttsim> ${CMAKE_SOURCE_DIR}/sim/libttsim.so
+        COMMENT "Copying ttsim library to sim/libttsim.so"
     )
 endif()

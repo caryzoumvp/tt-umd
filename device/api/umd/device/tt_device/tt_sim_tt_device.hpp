@@ -99,6 +99,7 @@ protected:
     void retrain_dram_core(const uint32_t dram_channel) override;
 
 private:
+    bool is_slow_path_enabled() const { return slow_path_mode_; }
     void initialize_sysmem_functions();
     void pci_dma_read_bytes(uint64_t paddr, void *p, uint32_t size);
     void pci_dma_write_bytes(uint64_t paddr, const void *p, uint32_t size);
@@ -109,6 +110,7 @@ private:
 
     std::filesystem::path simulator_directory_;
     ChipId chip_id_;
+    bool slow_path_mode_ = false;
     std::unique_ptr<SimulationSysmemManager> sysmem_manager_;
 
     uint32_t libttsim_pci_device_id;
