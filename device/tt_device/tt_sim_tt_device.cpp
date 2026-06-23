@@ -204,14 +204,28 @@ void TTSimTTDevice::write_to_device(const void* mem_ptr, tt_xy_pair core, uint64
         return;
     }
     std::lock_guard<std::recursive_mutex> lock(device_lock);
-    if (sim_dram_teleport_enabled()) {
-        if (get_soc_descriptor().is_core_of_type(core, CoreType::DRAM, CoordSystem::TRANSLATED)) {
-            if (communicator_->dram_write_bytes(core.x, core.y, addr, mem_ptr, size)) {
-                return;
-            }
-            communicator_->tile_write_bytes(core.x, core.y, addr, mem_ptr, size);
+    if (get_soc_descriptor().is_core_of_type(core, CoreType::DRAM, CoordSystem::TRANSLATED)) {
+        if (communicator_->dram_write_bytes(core.x, core.y, addr, mem_ptr, size)) {
+            log_debug(
+                tt::LogUMD,
+                "TTSimTTDevice::write_to_device DRAM path core=({}, {}) addr=0x{:x} size={}",
+                core.x,
+                core.y,
+                addr,
+                size);
             return;
         }
+        if (sim_dram_teleport_enabled()) {
+            log_debug(
+                tt::LogUMD,
+                "TTSimTTDevice::write_to_device DRAM teleport fallback core=({}, {}) addr=0x{:x} size={}",
+                core.x,
+                core.y,
+                addr,
+                size);
+        }
+        communicator_->tile_write_bytes(core.x, core.y, addr, mem_ptr, size);
+        return;
     }
     if (
         is_slow_path_enabled() || is_soft_reset_register(architecture_impl_.get(), addr) || is_low_l1_control_region(addr) ||
@@ -221,6 +235,16 @@ void TTSimTTDevice::write_to_device(const void* mem_ptr, tt_xy_pair core, uint64
         cached_tlb_window_->write_block_reconfigure(mem_ptr, core, addr, size, get_selected_noc_id());
     } else {
         communicator_->tile_write_bytes(core.x, core.y, addr, mem_ptr, size);
+    }
+
+    // Mirror simulator DRAM writes into the host-visible sysmem arena so
+    // fast-dispatch CQ writebacks to DRAM-backed completion queues become
+    // observable to host polling code.
+    if (get_soc_descriptor().is_core_of_type(core, CoreType::DRAM, CoordSystem::TRANSLATED)) {
+        auto* sim_mgr = dynamic_cast<SimulationSysmemManager*>(sysmem_manager_.get());
+        if (sim_mgr != nullptr) {
+            sim_mgr->write_to_sysmem(0, mem_ptr, addr, static_cast<uint32_t>(size));
+        }
     }
 }
 

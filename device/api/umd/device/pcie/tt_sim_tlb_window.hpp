@@ -18,10 +18,12 @@ class TlbHandle;
 struct tlb_data;
 
 /**
- * Simulation TlbWindow implementation that uses TTSimCommunicator
- * for memory access instead of direct pointer dereferencing.
- * This allows TLB operations to work with TTSim where the device
- * memory is not mapped into the user process.
+ * Simulation TlbWindow implementation that keeps TLB configuration in software
+ * and translates accesses back into tile/DRAM socket operations.
+ *
+ * Unlike silicon, the gem5-backed TTSim path does not have a real PCI BAR/TLB
+ * aperture. The TLB config (core coordinates + address) is therefore used to
+ * reconstruct the target core/address for each access, similar to RTL sim.
  */
 class TTSimTlbWindow : public TlbWindow {
 public:
@@ -42,11 +44,8 @@ public:
     uint16_t safe_read16(uint64_t offset) override;
 
 private:
-    /**
-     * Get the physical address for a TLB window offset.
-     * This combines the TLB's base address with the given offset.
-     */
-    uint64_t get_physical_address(uint64_t offset) const;
+    void translate_and_write(uint64_t offset, const void* data, size_t size);
+    void translate_and_read(uint64_t offset, void* data, size_t size);
 
     TTSimCommunicator* sim_communicator_;
 };

@@ -144,6 +144,20 @@ void SimulationChip::noc_multicast_write(
             addr,
             size);
 
+        if (addr <= 0x3980 && (addr + size) > 0x3980) {
+            log_debug(
+                LogUMD,
+                "Multicast firmware span covers BRISC base addr=0x{:x} size={} src=({}, {}) rect=({}, {})->({}, {})",
+                addr,
+                size,
+                kTranslatedSrc.x,
+                kTranslatedSrc.y,
+                translated_start.x,
+                translated_start.y,
+                translated_end.x,
+                translated_end.y);
+        }
+
         tt_sim_device->get_communicator()->tile_noc_multicast_write_bytes(
             kTranslatedSrc.x,
             kTranslatedSrc.y,
@@ -159,10 +173,25 @@ void SimulationChip::noc_multicast_write(
         return;
     }
 
+    if (addr <= 0x3980 && (addr + size) > 0x3980) {
+        log_debug(
+            LogUMD,
+            "Fallback multicast expansion covers BRISC base addr=0x{:x} size={} rect=({}, {})->({}, {})",
+            addr,
+            size,
+            translated_start.x,
+            translated_start.y,
+            translated_end.x,
+            translated_end.y);
+    }
+
     for (uint32_t x = translated_start.x; x <= translated_end.x; ++x) {
         for (uint32_t y = translated_start.y; y <= translated_end.y; ++y) {
             if (get_soc_descriptor().arch == tt::ARCH::BLACKHOLE && (x == 8 || x == 9)) {
                 continue;
+            }
+            if (addr <= 0x3980 && (addr + size) > 0x3980) {
+                log_debug(LogUMD, "Fallback multicast write tile=({}, {}) addr=0x{:x} size={}", x, y, addr, size);
             }
             write_to_device(CoreCoord(x, y, core_start.core_type, CoordSystem::TRANSLATED), src, addr, size);
         }

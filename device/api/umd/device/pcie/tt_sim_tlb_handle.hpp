@@ -18,8 +18,11 @@ class SimulationTlbAllocator;
 enum TlbMapping : uint8_t;
 
 /**
- * Simulation-specific TlbHandle that inherits from TlbHandle but bypasses hardware operations.
- * This allows compatibility with TlbWindow while providing simulation functionality.
+ * Simulation-specific TlbHandle that stores TLB state in software only.
+ *
+ * The gem5-backed TTSim path does not model a real PCI BAR0/TLB register file,
+ * so configure() records the requested translation instead of programming
+ * hardware registers.
  */
 class TTSimTlbHandle : public TlbHandle {
 public:
@@ -54,8 +57,6 @@ private:
     void free_tlb() noexcept override;
 
     std::shared_ptr<SimulationTlbAllocator> allocator_;
-    class TTSimCommunicator* sim_communicator_;
-    uint64_t tlb_reg_addr_ = 0;
 };
 
 }  // namespace tt::umd
