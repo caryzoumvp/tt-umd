@@ -35,11 +35,17 @@ constexpr uint8_t CMD_WRITE_PCIE = 0x21;
 
 constexpr uint8_t RESP_OK = 0x00;
 
-constexpr uint32_t kDebugSoftResetAddr = 0xFFB121B0;
+constexpr uint32_t kWormholeDebugSoftResetAddr = 0xFFB121B0;
+constexpr uint32_t kQuasarSoftResetAddr = 0x030179B0;
+constexpr uint32_t kQuasarLocalSoftResetAddr0 = 0x018000B8;
+constexpr uint32_t kQuasarLocalSoftResetAddr1 = 0x018100B8;
+constexpr uint32_t kQuasarLocalSoftResetAddr2 = 0x018200B8;
+constexpr uint32_t kQuasarLocalSoftResetAddr3 = 0x018300B8;
 constexpr uint64_t kMaxDebugAddress = 0xFFFFFFFFull;
 constexpr uint64_t kTensixGoMsgAddr = 0x5C;
 constexpr uint64_t kTensixGoMsgSignalAddr = kTensixGoMsgAddr + 3;
 
+constexpr const char* kNeoSocketEnvVar = "TT_NEO_DBG_SOCKET";
 constexpr const char* kSocketEnvVar = "TT_WORMHOLE_DBG_SOCKET";
 constexpr const char* kDefaultSocketPath = "/tmp/tt_sim.sock";
 constexpr const char* kPcieSocketEnvVar = "TT_WORMHOLE_PCIE_SOCKET";
@@ -58,12 +64,7 @@ enum class SimDebugLevel { NONE = 0, INFO = 1, DEBUG = 2 };
 SimDebugLevel g_debug_level = SimDebugLevel::NONE;
 int g_pcie_service_listen_fd = -1;
 constexpr uint8_t kDramTileCoords[][2] = {
-    {0, 0}, {0, 1}, {0, 11},
-    {0, 5}, {0, 6}, {0, 7},
-    {5, 0}, {5, 1}, {5, 11},
-    {5, 2}, {5, 9}, {5, 10},
-    {5, 3}, {5, 4}, {5, 8},
-    {5, 5}, {5, 6}, {5, 7},
+    {2, 7}, {3, 7},
 };
 
 uint64_t tile_key(uint32_t x, uint32_t y) {
@@ -71,6 +72,10 @@ uint64_t tile_key(uint32_t x, uint32_t y) {
 }
 
 std::string dbg_socket_path() {
+    const char* neo_env = std::getenv(kNeoSocketEnvVar);
+    if (neo_env) {
+        return neo_env;
+    }
     const char* env = std::getenv(kSocketEnvVar);
     return env ? env : kDefaultSocketPath;
 }
@@ -99,11 +104,11 @@ bool is_eth_border_tile(uint32_t x, uint32_t y) {
 }
 
 bool is_arc_tile(uint32_t x, uint32_t y) {
-    return x == 0 && y == 10;
+    return (x == 0 && y == 10) || (x == 8 && y == 0);
 }
 
 bool is_pcie_tile(uint32_t x, uint32_t y) {
-    return x == 0 && y == 3;
+    return (x == 0 && y == 3) || (x == 2 && y == 0) || (x == 11 && y == 0);
 }
 
 bool is_locally_shadowed_tile(uint32_t x, uint32_t y) {
@@ -145,7 +150,12 @@ void shadow_mark_init_done_for_tile(uint32_t x, uint32_t y) {
 }
 
 bool is_soft_reset_addr(uint64_t addr) {
-    return addr == static_cast<uint64_t>(kDebugSoftResetAddr);
+    return addr == static_cast<uint64_t>(kWormholeDebugSoftResetAddr) ||
+           addr == static_cast<uint64_t>(kQuasarSoftResetAddr) ||
+           addr == static_cast<uint64_t>(kQuasarLocalSoftResetAddr0) ||
+           addr == static_cast<uint64_t>(kQuasarLocalSoftResetAddr1) ||
+           addr == static_cast<uint64_t>(kQuasarLocalSoftResetAddr2) ||
+           addr == static_cast<uint64_t>(kQuasarLocalSoftResetAddr3);
 }
 
 bool is_debug_address_supported(uint64_t addr) {
@@ -653,7 +663,8 @@ bool write_debug_payload_locked(
         return false;
     }
 
-    send_cmd_locked(
+    uint8_t status = 0;
+    bool ok = send_cmd_locked(
         cmd,
         static_cast<uint8_t>(x),
         static_cast<uint8_t>(y),
@@ -661,7 +672,11 @@ bool write_debug_payload_locked(
         size,
         static_cast<const uint8_t*>(p),
         size,
-        nullptr);
+        &status);
+    if (!ok || status != RESP_OK) {
+        dbg_info("%s: failed status=0x%02x", log_prefix, status);
+        return false;
+    }
     dbg_info("%s: submitted", log_prefix);
     return true;
 }
@@ -739,8 +754,12 @@ void libttsim_exit() {
 
 uint32_t libttsim_pci_config_rd32(uint32_t bus_device_function, uint32_t offset) {
     (void)bus_device_function;
-    (void)offset;
-    return 0x401E1E52;
+    if (offset == 0) {
+        constexpr uint32_t kTenstorrentVendorId = 0x1E52;
+        constexpr uint32_t kQuasarDeviceId = 0xfeed;
+        return (kQuasarDeviceId << 16) | kTenstorrentVendorId;
+    }
+    return 0;
 }
 
 void libttsim_set_pci_dma_mem_callbacks(
@@ -801,12 +820,13 @@ void libttsim_tile_rd_bytes(uint32_t x, uint32_t y, uint64_t addr, void* p, uint
         return;
     }
 
-    if (is_soft_reset_addr(addr) && size == sizeof(uint32_t)) {
+    if (is_soft_reset_addr(addr) && size >= sizeof(uint32_t)) {
         uint32_t value = 0;
         auto it = g_soft_reset_shadow.find(tile_key(x, y));
         if (it != g_soft_reset_shadow.end()) {
             value = it->second;
         }
+        std::memset(p, 0, size);
         encode_u32_le(static_cast<uint8_t*>(p), value);
         return;
     }
@@ -827,8 +847,10 @@ void libttsim_tile_wr_bytes(uint32_t x, uint32_t y, uint64_t addr, const void* p
     std::lock_guard<std::mutex> lock(g_client_mutex);
     dbg_info("wr: tile=(%u,%u) addr=0x%llx size=%u", x, y, static_cast<unsigned long long>(addr), size);
 
-    if (is_soft_reset_addr(addr) && size == sizeof(uint32_t)) {
-        dbg_info("wr: write soft reset value 0x%x", *(static_cast<const uint32_t*>(p)));
+    if (is_soft_reset_addr(addr) && size >= sizeof(uint32_t)) {
+        uint32_t value = 0;
+        std::memcpy(&value, p, sizeof(value));
+        dbg_info("wr: write soft reset value 0x%x", value);
         write_soft_reset_locked(x, y, addr, p);
         return;
     }
